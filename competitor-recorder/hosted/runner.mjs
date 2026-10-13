@@ -11,6 +11,17 @@ import { validateSite, publicHostname } from './worker.mjs';
 const reply = (res, status, data) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(data)); };
 const validId = id => /^[a-f0-9-]{36}$/.test(id);
 const authorized = (header, token) => { const expected = Buffer.from('Bearer ' + token), actual = Buffer.from(header || ''); return expected.length === actual.length && timingSafeEqual(expected, actual); };
+
+export function captureFailure(error,stage='recording'){
+ const text=String(error?.message||error||'');
+ const rules=[[/Executable doesn't exist/i,'browser-executable-missing'],[/error while loading shared libraries|Host system is missing dependencies/i,'browser-dependencies-missing'],[/sandbox|Operation not permitted/i,'browser-sandbox-failure'],[/Target page, context or browser has been closed|browser.*closed/i,'browser-closed'],[/net::ERR_[A-Z_]+/,'navigation-network-error'],[/Timeout.*exceeded|deadline/i,'capture-timeout'],[/Cannot read properties|is not a function|Illegal invocation/i,'runtime-type-error'],[/ENOENT/,'file-missing'],[/EACCES|permission denied/i,'file-permission-denied'],[/upload/i,'durable-upload-failed']];
+ const code=rules.find(([pattern])=>pattern.test(text))?.[1]||'capture-failed';
+ const method=text.match(/\b(?:browserType|browserContext|page|locator|frame)\.[A-Za-z]+(?=:)/)?.[0];
+ const network=text.match(/net::ERR_[A-Z_]+/)?.[0];
+ const typeError=text.match(/(?:Cannot read properties of (?:undefined|null)(?: \(reading '[A-Za-z0-9_]+'\))?|[A-Za-z0-9_.]+ is not a function|Illegal invocation)/)?.[0];
+ return {failureCode:code,failureStage:stage,failureMessage:[method,network,typeError,code].filter(Boolean).join(': ').slice(0,240)};
+}
+
 export function guardedBrowser(browserType, allowedHosts, egressProxy, publicSubresources=false) {
   const allowed = new Set(allowedHosts.map(host => host.toLowerCase()));
   if ((!allowed.size && !publicSubresources) || !egressProxy) throw Error('Explicit capture host allowlist and restricted egress proxy are required');
@@ -54,10 +65,10 @@ export async function createCaptureRunner({ token, client, model, browserType, b
         },
         onProgress: progress => { job.progress = progress; }
       });
-      if (result.run.status === 'failed') throw Error('Capture failed');
+      if (result.run.status === 'failed') throw Error(result.run.error||'Capture failed');
       if(onCompleted){job.phase='Uploading capture';await save(job);await onCompleted({id:job.id,folder:path.join(root,job.id),run:result.run});}
       job.status = 'completed'; job.phase = result.run.status === 'completed-with-gaps' ? 'Ready with capture gaps' : 'Ready';
-    } catch { job.status = 'failed'; job.phase = 'Stopped'; job.error = 'Capture failed or was interrupted; inspect the service capture files'; }
+    } catch(error) { const failure=captureFailure(error,job.phase==='Uploading capture'?'uploading':job.progress?.phase||'browser-start-or-initial-navigation');Object.assign(job,failure);console.error(JSON.stringify({event:'capture-failed',id:job.id,...failure}));job.status = 'failed'; job.phase = 'Stopped'; job.error = failure.failureMessage; }
     finally { job.endedAt = new Date().toISOString(); try { await save(job); } catch { job.error = 'Job status could not be persisted; inspect service storage'; } active = null; }
   }
   return http.createServer(async (req, res) => {
