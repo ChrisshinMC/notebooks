@@ -26,3 +26,6 @@ The image uses the frozen pnpm lock and a shared browser installation readable
 by the non-root node user. The image itself has not been built in this session.
 No provider or browser was invoked in tests. Hosting, secrets, HTTPS, persistent
 storage and live acceptance remain required before claiming a working service.
+
+Cloud Chromium disables HTTP/2 and QUIC for proxy compatibility. Captures use
+HTTP/1.1 transport where supported; protocol behavior differs from defaults.

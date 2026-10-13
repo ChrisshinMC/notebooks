@@ -14,10 +14,10 @@ const authorized = (header, token) => { const expected = Buffer.from('Bearer ' +
 
 export function captureFailure(error,stage='recording'){
  const text=String(error?.message||error||'');
- const rules=[[/Executable doesn't exist/i,'browser-executable-missing'],[/error while loading shared libraries|Host system is missing dependencies/i,'browser-dependencies-missing'],[/sandbox|Operation not permitted/i,'browser-sandbox-failure'],[/Target page, context or browser has been closed|browser.*closed/i,'browser-closed'],[/net::ERR_[A-Z_]+/,'navigation-network-error'],[/Timeout.*exceeded|deadline/i,'capture-timeout'],[/Cannot read properties|is not a function|Illegal invocation/i,'runtime-type-error'],[/ENOENT/,'file-missing'],[/EACCES|permission denied/i,'file-permission-denied'],[/upload/i,'durable-upload-failed']];
+ const rules=[[/Executable doesn't exist/i,'browser-executable-missing'],[/error while loading shared libraries|Host system is missing dependencies/i,'browser-dependencies-missing'],[/sandbox|Operation not permitted/i,'browser-sandbox-failure'],[/Target page, context or browser has been closed|browser.*closed/i,'browser-closed'],[/net::ERR_[A-Z0-9_]+/,'navigation-network-error'],[/Timeout.*exceeded|deadline/i,'capture-timeout'],[/Cannot read properties|is not a function|Illegal invocation/i,'runtime-type-error'],[/ENOENT/,'file-missing'],[/EACCES|permission denied/i,'file-permission-denied'],[/upload/i,'durable-upload-failed']];
  const code=rules.find(([pattern])=>pattern.test(text))?.[1]||'capture-failed';
  const method=text.match(/\b(?:browserType|browserContext|page|locator|frame)\.[A-Za-z]+(?=:)/)?.[0];
- const network=text.match(/net::ERR_[A-Z_]+/)?.[0];
+ const network=text.match(/net::ERR_[A-Z0-9_]+/)?.[0];
  const typeError=text.match(/(?:Cannot read properties of (?:undefined|null)(?: \(reading '[A-Za-z0-9_]+'\))?|[A-Za-z0-9_.]+ is not a function|Illegal invocation)/)?.[0];
  return {failureCode:code,failureStage:stage,failureMessage:[method,network,typeError,code].filter(Boolean).join(': ').slice(0,240)};
 }
@@ -26,7 +26,7 @@ export function guardedBrowser(browserType, allowedHosts, egressProxy, publicSub
   const allowed = new Set(allowedHosts.map(host => host.toLowerCase()));
   if ((!allowed.size && !publicSubresources) || !egressProxy) throw Error('Explicit capture host allowlist and restricted egress proxy are required');
   return { launch: async options => {
-    const browser = await browserType.launch({ ...options, proxy: { server: egressProxy }, args:[...(options.args||[]),'--proxy-bypass-list=<-loopback>','--disable-quic'] });
+    const browser = await browserType.launch({ ...options, proxy: { server: egressProxy }, args:[...(options.args||[]),'--proxy-bypass-list=<-loopback>','--disable-quic','--disable-http2'] });
     return new Proxy(browser, { get(target, key) {
       if (key === 'newContext') return async config => {
         const context = await target.newContext(config);
