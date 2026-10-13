@@ -1,0 +1,1 @@
+{"name":"competitive-ux-research","version":"0.1.0","private":true,"type":"module","scripts":{"test":"node --test test/*.test.mjs tests/*.test.mjs hosted/*.test.mjs","record":"node src/cli.mjs","fixture":"node fixtures/network-site/server.mjs"},"dependencies":{"playwright":"1.64.0"},"engines":{"node":">=20"}}

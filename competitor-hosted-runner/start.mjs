@@ -1,0 +1,11 @@
+import {createPublicProxy} from './public-proxy.mjs';
+import {createRequire} from 'node:module';
+import {createService} from './service.mjs';
+const require=createRequire(new URL('../competitor-recorder/package.json',import.meta.url));
+const {chromium}=require('playwright');
+const port=Number(process.env.PORT||9000);
+if(!Number.isInteger(port)||port<1||port>65535)throw Error('Invalid PORT');
+const proxy=createPublicProxy();await new Promise(resolve=>proxy.listen(0,'127.0.0.1',resolve));
+const service=await createService({browserType:chromium,env:{...process.env,CAPTURE_EGRESS_PROXY:'http://127.0.0.1:'+proxy.address().port,CAPTURE_PUBLIC_SUBRESOURCES:'true'}});
+service.listen(port,'0.0.0.0',()=>console.log('Authenticated capture service listening'));
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>service.close(()=>process.exit(0)));
