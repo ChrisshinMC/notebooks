@@ -66,7 +66,7 @@ export async function createCaptureRunner({ token, client, model, browserType, b
         onProgress: progress => { job.progress = progress; }
       });
       if (result.run.status === 'failed') throw Error(result.run.error||'Capture failed');
-      if(onCompleted){job.phase='Uploading capture';await save(job);await onCompleted({id:job.id,folder:path.join(root,job.id),run:result.run});}
+      if(onCompleted){job.phase='Uploading capture';await save(job);await onCompleted({id:job.id,folder:path.join(root,job.id),run:result.run,onProgress:progress=>{const upload={};for(const key of ['processed','total','uploadedBytes'])if(Number.isSafeInteger(progress?.[key])&&progress[key]>=0)upload[key]=progress[key];job.progress={...job.progress,upload};}});}
       job.status = 'completed'; job.phase = result.run.status === 'completed-with-gaps' ? 'Ready with capture gaps' : 'Ready';
     } catch(error) { const failure=captureFailure(error,job.phase==='Uploading capture'?'uploading':job.progress?.phase||'browser-start-or-initial-navigation');Object.assign(job,failure);console.error(JSON.stringify({event:'capture-failed',id:job.id,...failure}));job.status = 'failed'; job.phase = 'Stopped'; job.error = failure.failureMessage; }
     finally { job.endedAt = new Date().toISOString(); try { await save(job); } catch { job.error = 'Job status could not be persisted; inspect service storage'; } active = null; }

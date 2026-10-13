@@ -108,6 +108,10 @@ export async function record(recipe, output, deviceName='desktop', browserType, 
     }else if(activeCaptureOperation){Object.assign(activeCaptureOperation,{endedAt:new Date().toISOString(),status:event.details.status,details:event.details});activeCaptureOperation=null;}
    }});
    state.captureOperationIds=captureOperationIds;
+   if(state.visualState?.challengeLike||state.qualityFlags.some(flag=>flag.code==='possible-access-challenge')){
+    run.stopReason='possible-access-challenge';run.blockedStateId=state.id;run.plannerStopReason='possible-access-challenge';
+    if(currentFlow){currentFlow.status='blocked';currentFlow.stopReason='possible-access-challenge';}
+   }
    const document=run.requests.findLast(r=>r.resourceType==='document'&&r.url===state.url);
    state.documentResponse={requestId:document?.id||null,status:document?.response?.status??null,availability:document?.response?.status!=null?'observed':'unavailable'};
    if(state.documentResponse.status>=400)state.qualityFlags.push({code:'document-http-error',severity:'warning',status:state.documentResponse.status,message:'The document returned an HTTP error status.'});
@@ -161,6 +165,7 @@ export async function record(recipe, output, deviceName='desktop', browserType, 
    }catch(e){run.flowDiscovery.push({stateId:state.id,status:'error',error:e.message});}
   }
   async function nextDiscovery(state){
+   if(run.stopReason==='possible-access-challenge')return;
    if(!hooks.discoverFlows)return proposeStep(state);
    await discoverCandidates(state);
    // A homepage may reveal its booking links only after a menu or tab action.
@@ -173,7 +178,7 @@ export async function record(recipe, output, deviceName='desktop', browserType, 
     currentFlow.stopReason=planned>=plannerLimit?'shared-action-budget':currentFlow.actionIds.length>=perFlowLimit?'per-flow-action-budget':run.plannerStopReason||'no-further-observed-action';
     currentFlow.completeness='not-exhaustive';currentFlow=null;
    }
-   while(planned<plannerLimit&&startedFlows<flowLimit){
+   while(planned<plannerLimit&&startedFlows<flowLimit&&!run.stopReason){
     if(Date.now()>deadline)throw new Error('Run time budget exceeded during flow restoration');
     const flow=run.flows.find(f=>f.status==='untested');if(!flow)return;
     currentFlow=flow;flow.status='in-progress';startedFlows++;run.plannerStopReason=null;
@@ -181,7 +186,7 @@ export async function record(recipe, output, deviceName='desktop', browserType, 
     try{
      if(source.id!==flow.sourceStateId){
       const nav={id:'navigation-'+run.navigations.length,type:'restore-flow-source',flowId:flow.id,fromStateId:source.id,toStateId:null,url:flow.sourceUrl,status:'running',requestIds:[],startedAt:new Date().toISOString()};run.navigations.push(nav);activeNavigation=nav;
-      try{await page.goto(flow.sourceUrl,{waitUntil:'domcontentloaded',timeout:45000});await settle();source=await captureState('state-'+run.states.length);source.flowId=flow.id;run.states.push(source);flow.stateIds.push(source.id);nav.toStateId=source.id;nav.status='completed';}catch(e){nav.status='blocked';nav.error=e.message;throw e;}finally{nav.endedAt=new Date().toISOString();activeNavigation=null;}
+      try{await page.goto(flow.sourceUrl,{waitUntil:'domcontentloaded',timeout:45000});await settle();source=await captureState('state-'+run.states.length);source.flowId=flow.id;run.states.push(source);flow.stateIds.push(source.id);nav.toStateId=source.id;nav.status='completed';if(run.stopReason)throw Error('Possible access challenge; stopping interaction');}catch(e){nav.status='blocked';nav.error=e.message;throw e;}finally{nav.endedAt=new Date().toISOString();activeNavigation=null;}
       // Replay only observed same-document discovery controls when a reload
       // drops the menu/tab state that originally exposed this entrypoint.
       const hasEntry=()=>{const list=flow.frameSelector?source.frames?.find(f=>f.frameSelector===flow.frameSelector)?.elements||[]:source.elements;return list.some(e=>e.selector===flow.selector&&e.name===flow.evidence.name&&(e.href||null)===(flow.href||null));};
@@ -208,7 +213,7 @@ export async function record(recipe, output, deviceName='desktop', browserType, 
          const loc=prior.frameSelector?page.frameLocator(prior.frameSelector).locator(prior.selector):page.locator(prior.selector);if(await loc.count()!==1)throw new Error('Ambiguous restoration target');
          const live=await loc.evaluate(el=>({name:el.getAttribute('aria-label')||el.innerText||'',type:el.getAttribute('type')}));if(exclusion(live))throw new Error('Excluded restoration target');
          if(prior.type==='hover')await loc.hover();else await loc.click();await settle();
-         source=await captureState('state-'+run.states.length);source.flowId=flow.id;run.states.push(source);flow.stateIds.push(source.id);restore.toStateId=source.id;restore.status='completed';
+         source=await captureState('state-'+run.states.length);source.flowId=flow.id;run.states.push(source);flow.stateIds.push(source.id);restore.toStateId=source.id;restore.status='completed';if(run.stopReason)throw Error('Possible access challenge; stopping interaction');
         }catch(e){restore.status='blocked';restore.error=e.message;throw e;}finally{restore.endedAt=new Date().toISOString();activeNavigation=null;await checkpoint('restored');}
        }
       }
@@ -224,6 +229,7 @@ export async function record(recipe, output, deviceName='desktop', browserType, 
   if(!queue.length)await nextDiscovery(run.states[0]);
   for(let i=0;i<queue.length;i++){
    if(Date.now()>deadline)throw new Error('Run time budget exceeded');
+   if(run.stopReason==='possible-access-challenge')break;
    const step=queue[i],from=run.states.at(-1),inventory=step.frameSelector?from.frames?.find(f=>f.frameSelector===step.frameSelector)?.elements||[]:from.elements,element=inventory.find(e=>e.selector===step.selector);
    const action={id:'action-'+i,...step,flowId:currentFlow?.id||null,elementId:element?.id||null,fromStateId:from.id,toStateId:null,startedAt:new Date().toISOString(),status:'running',requestIds:[],attribution:'temporal-window-not-causality'};
    currentFlow?.actionIds.push(action.id);
@@ -252,7 +258,7 @@ export async function record(recipe, output, deviceName='desktop', browserType, 
    await checkpoint('observed');
    if(i===queue.length-1)await nextDiscovery(state);
   }
-  await settle();run.status=run.actions.some(a=>a.status==='blocked')||run.plannerDecisions.some(d=>d.status==='error')||run.flowDiscovery.some(d=>d.status==='error')||run.flows.some(f=>f.status!=='explored')?'completed-with-gaps':'completed';
+  await settle();run.status=!!run.stopReason||run.actions.some(a=>a.status==='blocked')||run.plannerDecisions.some(d=>d.status==='error')||run.flowDiscovery.some(d=>d.status==='error')||run.flows.some(f=>f.status!=='explored')?'completed-with-gaps':'completed';
   if(hooks.discoverFlows)run.researchScope='Bounded exploration of discovered flow entrypoints; no claim of complete site or checkout coverage.';
  }catch(e){run.status='failed';run.error=e.message;}
  finally {

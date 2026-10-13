@@ -5,6 +5,11 @@ import {exclusion} from './explore.mjs';
 import {waitForCaptureReadiness} from './capture-readiness.mjs';
 import {sweepLazyImages} from './lazy-image-sweep.mjs';
 
+export function accessChallenge(title='',text=''){
+ const combined=String(title)+' '+String(text);
+ return /access denied|verify (?:that )?you are human|checking your browser|just a moment|sorry[,!]? you have been blocked|complete (?:the )?(?:security check|captcha)|verify (?:your identity|you are not a robot)/i.test(combined)||(/cloudflare/i.test(combined)&&/attention required|you (?:have been|are) blocked|security verification|challenge-platform/i.test(combined));
+}
+
 export function pngSize(bytes){
  if(!Buffer.isBuffer(bytes)||bytes.length<24||bytes.subarray(0,8).toString('hex')!=='89504e470d0a1a0a')return null;
  return {width:bytes.readUInt32BE(16),height:bytes.readUInt32BE(20)};
@@ -69,8 +74,9 @@ export async function snapshot(page, folder, id, options={}) {
   const bodyText=document.body?.innerText||'';
   const visualState={textLength:bodyText.trim().length,imageCount:document.images.length,canvasCount:document.querySelectorAll('canvas').length,brokenImages:[...document.images].filter(img=>img.complete&&img.currentSrc&&!img.naturalWidth).length,pendingImages:[...document.images].filter(img=>!img.complete).length,pendingOffscreenLazyImages:[...document.images].filter(img=>img.loading==='lazy'&&!img.complete&&img.getBoundingClientRect().top>=innerHeight).length,fontStatus:document.fonts?.status||'unavailable',challengeLike:/access denied|verify (?:that )?you are human|checking your browser|just a moment/i.test(document.title+' '+bodyText.slice(0,400))};
   visualState.pendingVisibleImages=[...document.images].filter(img=>{const r=img.getBoundingClientRect();return !img.complete&&r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}).length;
-  return {title:document.title,url:location.href,baseUrl:document.baseURI,originalHtml,html:'<!doctype html>\n'+clone.outerHTML,elements,visualState,viewport:{width:innerWidth,height:innerHeight},scroll:{x:scrollX,y:scrollY},documentSize:{width:document.documentElement.scrollWidth,height:document.documentElement.scrollHeight}};
+  return {accessCheckText:bodyText.slice(0,16000),title:document.title,url:location.href,baseUrl:document.baseURI,originalHtml,html:'<!doctype html>\n'+clone.outerHTML,elements,visualState,viewport:{width:innerWidth,height:innerHeight},scroll:{x:scrollX,y:scrollY},documentSize:{width:document.documentElement.scrollWidth,height:document.documentElement.scrollHeight}};
  });
+ data.visualState||={};data.visualState.challengeLike=!!data.visualState.challengeLike||accessChallenge(data.title,data.accessCheckText||'');delete data.accessCheckText;
  for(const e of data.elements){const reason=exclusion(e);if(reason){e.status='excluded';e.reason=reason;}}
  const html=`snapshots/${id}.html`, screenshot=`screens/${id}.png`;
  const rawHtml=`snapshots/${id}.raw.html`;
