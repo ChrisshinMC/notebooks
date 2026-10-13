@@ -7,6 +7,12 @@ import {validatePlan} from './plan-schema.mjs';
 
 export async function settleWithin(promise,ms=5000){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Capture deadline exceeded')),ms);})]);}finally{clearTimeout(timer);}}
 
+export function bodyWorkQueue(limit=2){
+ let active=0,closed=false;const queue=[];
+ const pump=()=>{while(!closed&&active<limit&&queue.length){const item=queue.shift();active++;Promise.resolve().then(item.task).then(item.resolve,item.reject).finally(()=>{active--;pump();});}};
+ return {run:task=>new Promise((resolve,reject)=>{if(closed)return reject(Error('Body extraction ended before queued request could start'));queue.push({task,resolve,reject});pump();}),close:()=>{closed=true;for(const item of queue.splice(0))item.reject(Error('Body extraction deadline exhausted before queued request could start'));},get pending(){return queue.length;},get active(){return active;}};
+}
+
 export async function record(recipe, output, deviceName='desktop', browserType, hooks={}) {
  recipe=validatePlan(recipe);
  const plannerLimit=hooks.maxActions??20;
@@ -29,16 +35,16 @@ export async function record(recipe, output, deviceName='desktop', browserType, 
   'Device profiles emulate viewport/touch; they are not physical-device measurements.'
  ]};
  run.recipeHash=createHash('sha256').update(JSON.stringify(recipe)).digest('hex');run.environment={node:process.version,platform:process.platform,architecture:process.arch};
- run.budgets={runMs:600000,drainMs:5000,actionMs:15000};
+ run.budgets={runMs:600000,drainMs:5000,finalDrainMs:30000,actionMs:15000,responseBodyConcurrency:2};
  const deadline=Date.now()+run.budgets.runMs;
- let browser,context,activeAction=null,activeNavigation=null,activeCaptureOperation=null,currentFlow=null,popupSource=null,popupListener=null,actionPopups=[],sequence=0,finalized=false,finalRun;const pending=new Set(),requestMap=new WeakMap();
+ let browser,context,activeAction=null,activeNavigation=null,activeCaptureOperation=null,currentFlow=null,popupSource=null,popupListener=null,actionPopups=[],sequence=0,finalized=false,finalRun;const pending=new Set(),requestMap=new WeakMap();const bodyQueue=bodyWorkQueue(2);
  const bounded=settleWithin;
  async function checkpoint(phase,manifest=run){
   const bytes=JSON.stringify(manifest,null,2),temporary=path.join(folder,'.run.json.tmp');
   await writeFile(temporary,bytes);await rename(temporary,path.join(folder,'run.json'));
   if(hooks.onProgress)try{await bounded(Promise.resolve(hooks.onProgress({phase,status:manifest.status,states:manifest.states.length,actions:manifest.actions.length,requests:manifest.requests.length,plannerDecisions:manifest.plannerDecisions.length})),1000);}catch(e){run.limitations.push('Progress callback: '+e.message);}
  }
- async function drain(){try{await bounded(Promise.allSettled([...pending]));}catch{run.limitations.push(`${pending.size} capture tasks still pending after drain deadline`);}}
+ async function drain(final=false){try{await bounded(Promise.allSettled([...pending]),final?Math.max(1,Math.min(run.budgets.finalDrainMs,deadline-Date.now())):run.budgets.drainMs);}catch{run.limitations.push(`${pending.size} capture tasks still pending after drain deadline`);}}
  const track=promise=>{pending.add(promise);promise.catch(e=>run.limitations.push('Capture error: '+e.message)).finally(()=>pending.delete(promise));};
  async function body(buffer) {
   if(finalized)return {status:'unavailable',reason:'Capture finalized'};
@@ -68,7 +74,7 @@ export async function record(recipe, output, deviceName='desktop', browserType, 
    const response=await req.response();entry.timing=req.timing();entry.finishedAt=new Date().toISOString();
    if(!response){entry.response={body:{status:'unavailable',reason:'No response object'}};return;}
    entry.response={status:response.status(),headers:await response.allHeaders(),fromServiceWorker:response.fromServiceWorker(),body:{status:'pending'}};
-   try {entry.response.body=await body(await response.body());
+   try {entry.response.body=await bodyQueue.run(async()=>{if(finalized)throw Error('Capture finalized before body extraction');const bytes=await response.body();return body(bytes);});
     if(['document','stylesheet','script','image','font','media'].includes(entry.resourceType)){
      const asset={url:entry.url,requestId:entry.id,capturedAt:entry.finishedAt,resourceType:entry.resourceType,...entry.response.body,contentType:entry.response.headers['content-type']||''};run.assets.push(asset);
     }
@@ -262,9 +268,9 @@ export async function record(recipe, output, deviceName='desktop', browserType, 
   if(hooks.discoverFlows)run.researchScope='Bounded exploration of discovered flow entrypoints; no claim of complete site or checkout coverage.';
  }catch(e){run.status='failed';run.error=e.message;}
  finally {
-  await drain();
+  await drain(true);
   if(context)await bounded(context.close(),10000).catch(e=>run.limitations.push('Context close/HAR flush: '+e.message));
-  await drain();if(browser)await bounded(browser.close()).catch(e=>run.limitations.push(e.message));
+  await drain(true);bodyQueue.close();if(browser)await bounded(browser.close()).catch(e=>run.limitations.push(e.message));
   for(const entry of run.requests)if(!entry.response&&!entry.failure)entry.response={body:{status:'unavailable',reason:'Request unfinished when capture closed'}};
   run.endedAt=new Date().toISOString();
   for(const entry of run.requests){for(const value of [entry.postData,entry.response?.body])if(value?.status==='pending'){value.status='unavailable';value.reason='Capture task did not settle before close';}}
