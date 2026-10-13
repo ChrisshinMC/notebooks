@@ -33,10 +33,10 @@ export function guardedBrowser(browserType, allowedHosts, egressProxy, publicSub
   } };
 }
 
-export async function createCaptureRunner({ token, client, model, browserType, browserReady = false, outputRoot, allowedHosts = [], egressProxy, publicSubresources=false, onCompleted, recordFn = record }) {
+export async function createCaptureRunner({ token, client, model, browserType, browserReady = false, outputRoot, allowedHosts = [], egressProxy, publicSubresources=false, onCompleted, formatFailure, recordFn = record }) {
   if (typeof token !== 'string' || token.length < 32) throw Error('A service authentication token of at least 32 characters is required');
   const root = path.resolve(outputRoot); await mkdir(root, { recursive: true });
-  const jobs = new Map(); let active = null;
+  const jobs = new Map(); let active = null;const modelChecks=[];
   const ready = () => !!client?.propose && !!client?.discover && !!model && browserReady && (allowedHosts.length > 0 || publicSubresources) && !!egressProxy;
   const save = async job => { const file = path.join(root, job.id + '.json'); await writeFile(file + '.tmp', JSON.stringify(job, null, 2)); await rename(file + '.tmp', file); };
   for (const filename of await readdir(root)) if (/^[a-f0-9-]{36}\.json$/.test(filename)) {
@@ -65,6 +65,13 @@ export async function createCaptureRunner({ token, client, model, browserType, b
     try {
       const url = new URL(req.url, 'http://runner.invalid');
       if (req.method === 'GET' && url.pathname === '/v1/status') return reply(res, 200, { captureAvailable: ready(), modelConfigured: !!client?.propose && !!model, model: model || null, busy: !!active });
+      if(req.method==='POST'&&url.pathname==='/v1/model/check'){
+        const now=Date.now();while(modelChecks.length&&modelChecks[0]<now-60000)modelChecks.shift();if(modelChecks.length>=3)return reply(res,429,{verified:false,error:'Verification rate limit reached'});modelChecks.push(now);
+        if(!client?.propose||!model)return reply(res,503,{verified:false,error:'Model is not configured'});
+        let length=0;for await(const chunk of req){length+=chunk.length;if(length>2)return reply(res,400,{verified:false,error:'This endpoint accepts no client inputs'});}
+        try{const context={site:{id:'verification',name:'Verification',startUrl:'https://example.com/'},allowedOrigins:['https://example.com'],elements:[],history:[],objective:'No observed controls. Return no action.'};const result=await client.propose({model,context});if(!result||!Array.isArray(result.steps)||result.steps.length!==0)throw Error('Verification failed');return reply(res,200,{verified:true,model});}
+        catch(error){const failure=formatFailure?.(error)||{code:'verification-failed',reason:'Model verification failed'};return reply(res,502,{verified:false,model,failure:{code:failure.code,reason:failure.reason,...(Number.isInteger(failure.providerStatus)?{providerStatus:failure.providerStatus}:{})}});}
+      }
       if (req.method === 'POST' && url.pathname === '/v1/runs') {
         if (!ready()) return reply(res, 503, { error: 'Capture runtime, model or egress policy is not configured' });
         if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) return reply(res, 400, { error: 'Send application/json' });

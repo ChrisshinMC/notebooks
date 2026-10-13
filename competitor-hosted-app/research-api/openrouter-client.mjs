@@ -6,6 +6,21 @@ const actionSchema={type:'object',additionalProperties:false,required:['action']
 const discoverySchema={type:'object',additionalProperties:false,required:['flows'],properties:{flows:{type:'array',maxItems:30,items:{type:'object',additionalProperties:false,required:['name','category','selector','frameSelector','reason'],properties:{...target,name:{type:'string'},category:{type:'string',enum:categories},reason:{type:'string'}}}}}};
 const validModel=value=>typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(value);
 export function hostedModelStatus(env){const model=validModel(env.OPENROUTER_MODEL)?env.OPENROUTER_MODEL:null;return {modelConfigured:typeof env.OPENROUTER_API_KEY==='string'&&!!env.OPENROUTER_API_KEY.trim()&&!!model,model,modelProvider:'openrouter'};}
+export function modelFailure(error){
+ const message=typeof error?.message==='string'?error.message:'';
+ const match=message.match(/^Hosted model service returned HTTP (\d{3})$/);
+ if(match){const status=Number(match[1]);const reasons={400:'Provider rejected the model request or structured-output schema.',401:'Provider authentication was rejected.',402:'Provider credit or billing requirements were not met.',403:'Provider denied model access.',404:'Provider model or endpoint was not found.',429:'Provider rate limit was reached.'};return {code:'provider-http-'+status,reason:reasons[status]||'Provider returned an HTTP error.',providerStatus:status};}
+ const known={
+  'Hosted model request failed or timed out':['transport-or-timeout','The provider connection failed or timed out.'],
+  'Model response was not valid JSON':['invalid-response-json','Provider response was not valid JSON.'],
+  'Hosted model returned invalid structured data':['invalid-structured-json','Model output was not valid structured JSON.'],
+  'Hosted model response did not complete':['incomplete-response','Provider did not return a completed text response.'],
+  'Model response exceeded size limit':['response-too-large','Provider response exceeded the size limit.'],
+  'Hosted model selected an unavailable target':['unobserved-target','Model proposed a target outside the observed inventory.'],
+  'Hosted model returned unsupported fields':['unsupported-shape','Model output did not match the required schema.'],
+ };
+ const [code,reason]=known[message]||['verification-failed','Hosted model verification failed.'];return {code,reason};
+}
 const pick=(value,keys)=>Object.fromEntries(keys.filter(key=>typeof value?.[key]==='string'||typeof value?.[key]==='boolean').map(key=>[key,typeof value[key]==='string'?value[key].slice(0,2000):value[key]]));
 const identity=element=>JSON.stringify([element.frameSelector||'',element.selector]);
 function observedContext(context){
