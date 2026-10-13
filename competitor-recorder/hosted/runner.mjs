@@ -33,7 +33,7 @@ export function guardedBrowser(browserType, allowedHosts, egressProxy, publicSub
   } };
 }
 
-export async function createCaptureRunner({ token, client, model, browserType, browserReady = false, outputRoot, allowedHosts = [], egressProxy, publicSubresources=false, recordFn = record }) {
+export async function createCaptureRunner({ token, client, model, browserType, browserReady = false, outputRoot, allowedHosts = [], egressProxy, publicSubresources=false, onCompleted, recordFn = record }) {
   if (typeof token !== 'string' || token.length < 32) throw Error('A service authentication token of at least 32 characters is required');
   const root = path.resolve(outputRoot); await mkdir(root, { recursive: true });
   const jobs = new Map(); let active = null;
@@ -55,6 +55,7 @@ export async function createCaptureRunner({ token, client, model, browserType, b
         onProgress: progress => { job.progress = progress; }
       });
       if (result.run.status === 'failed') throw Error('Capture failed');
+      if(onCompleted){job.phase='Uploading capture';await save(job);await onCompleted({id:job.id,folder:path.join(root,job.id),run:result.run});}
       job.status = 'completed'; job.phase = result.run.status === 'completed-with-gaps' ? 'Ready with capture gaps' : 'Ready';
     } catch { job.status = 'failed'; job.phase = 'Stopped'; job.error = 'Capture failed or was interrupted; inspect the service capture files'; }
     finally { job.endedAt = new Date().toISOString(); try { await save(job); } catch { job.error = 'Job status could not be persisted; inspect service storage'; } active = null; }
